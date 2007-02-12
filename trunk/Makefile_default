@@ -1,0 +1,744 @@
+# Makefile for systems with GNU tools
+CC 	=	gcc
+CXX	=	g++
+INSTALL	=	install
+
+#Debug flags
+CFLAGS = -g -Wall -W -Wshadow
+CXXFLAGS = -g -Wall `mysql_config --cflags` 
+
+IFLAGS = $(ILINUX) -idirafter dummyinc
+IXXFLAGS = -I`pg_config --includedir`
+
+#Release flags
+#CFLAGS	=	-O2 -Wall -W -Wshadow -pedantic -Werror -Wconversion
+#CXXFLAGS = 	-O2 -Wall -W -Wshadow -pedantic -Werror -Wconversion `mysql_config --cflags` 
+
+LIBS	=	`./vsf_findlibs.sh` -lpthread `mysql_config --libs` -L`pg_config --libdir` -lpq
+LINK	=	-g
+
+#All *.cpp files in the current directory
+OBJSCPP := $(patsubst %.cpp,%.o,$(wildcard *.cpp))
+#All *.c files in the current directory
+OBJS := $(patsubst %.c,%.o,$(wildcard *.c))
+
+#Build rule for *.c files
+.c.o:
+	$(CC) -c $*.c $(CFLAGS) $(IFLAGS)
+
+#Build rule for *.cpp files
+.cpp.o:
+	$(CXX) -c $*.cpp $(CXXFLAGS) $(IXXFLAGS)
+
+#link the executable
+vsftpd: $(OBJS) $(OBJSCPP)
+	$(CXX) -o vsftpd $(OBJS) $(OBJSCPP) $(LINK) $(LIBS) $(LDFLAGS)
+
+#default vsftp install
+install:
+	if [ -x /usr/local/sbin ]; then \
+		$(INSTALL) -m 755 vsftpd /usr/local/sbin/vsftpd; \
+	else \
+		$(INSTALL) -m 755 vsftpd /usr/sbin/vsftpd; fi
+	if [ -x /usr/local/man ]; then \
+		$(INSTALL) -m 644 vsftpd.8 /usr/local/man/man8/vsftpd.8; \
+		$(INSTALL) -m 644 vsftpd.conf.5 /usr/local/man/man5/vsftpd.conf.5; \
+	elif [ -x /usr/share/man ]; then \
+		$(INSTALL) -m 644 vsftpd.8 /usr/share/man/man8/vsftpd.8; \
+		$(INSTALL) -m 644 vsftpd.conf.5 /usr/share/man/man5/vsftpd.conf.5; \
+	else \
+		$(INSTALL) -m 644 vsftpd.8 /usr/man/man8/vsftpd.8; \
+		$(INSTALL) -m 644 vsftpd.conf.5 /usr/man/man5/vsftpd.conf.5; fi
+	if [ -x /etc/xinetd.d ]; then \
+		$(INSTALL) -m 644 xinetd.d/vsftpd /etc/xinetd.d/vsftpd; fi
+
+#clean objects, executable and auto-generated files
+clean: autoclean
+	rm -f *.o *.swp vsftpd
+
+#remake dependancies
+depend:
+	mkdep -o Makefile *.c *.cpp
+
+#build rules for code-generators
+code_generation/struct_filter: code_generation/struct_filter.lex
+	(cd code_generation; ./build.sh struct_filter;);
+
+code_generation/serialization: code_generation/serialization.lex code_generation/serialization.yacc
+	(cd code_generation; ./build.sh serialization;);
+
+code_generation/sender_receiver: code_generation/sender_receiver.lex code_generation/sender_receiver.yacc
+	(cd code_generation; ./build.sh sender_receiver;);
+
+code_generation/free_memory: code_generation/free_memory.lex code_generation/free_memory.yacc
+	(cd code_generation; ./build.sh free_memory;);
+
+#fake targets
+.PHONY: all autoclean depend
+
+all : depend autoclean vsftpd
+
+#removes autobuilt files
+autoclean:
+	rm udsrf_auto.h &>/dev/null; echo -n
+	rm event_auto.h &>/dev/null; echo -n
+	rm request_auto.h &>/dev/null; echo -n
+	rm serialization_auto.h &>/dev/null; echo -n
+	rm slave_thread_auto.h &>/dev/null; echo -n
+	rm code_generation/struct_filter &>/dev/null; echo -n
+	rm code_generation/serialization &>/dev/null; echo -n
+	rm code_generation/sender_receiver &>/dev/null; echo -n
+	rm code_generation/free_memory &>/dev/null; echo -n
+
+#hardcoded dependancies
+udsrf.h: udsrf_auto.h
+event.cpp : event_auto.h
+request.cpp : request_auto.h
+unknown_object.h : serialization_auto.h
+slave_thread.cpp : slave_thread_auto.h
+
+udsrf_auto.h: code_generation/sender_receiver code_generation/struct_filter event_c_api.h request_c_api.h
+	cat event_c_api.h | code_generation/struct_filter | code_generation/sender_receiver s > udsrf_auto.h
+	cat event_c_api.h | code_generation/struct_filter | code_generation/sender_receiver r >> udsrf_auto.h
+	cat request_c_api.h | code_generation/struct_filter | code_generation/sender_receiver s >> udsrf_auto.h
+	cat request_c_api.h | code_generation/struct_filter | code_generation/sender_receiver r >> udsrf_auto.h
+
+event_auto.h: event_c_api.h code_generation/events_receiver.py code_generation/free_memory code_generation/struct_filter
+	cat event_c_api.h | code_generation/struct_filter | code_generation/events_receiver.py Event > event_auto.h
+	cat event_c_api.h | code_generation/struct_filter | code_generation/free_memory >> event_auto.h
+
+request_auto.h: request_c_api.h code_generation/events_receiver.py code_generation/free_memory code_generation/struct_filter
+	cat request_c_api.h | code_generation/struct_filter | code_generation/events_receiver.py Request > request_auto.h
+	cat request_c_api.h | code_generation/struct_filter | code_generation/free_memory >> request_auto.h
+
+serialization_auto.h : request_c_api.h code_generation/serialization code_generation/struct_filter
+	cat request_results.h | code_generation/struct_filter | code_generation/serialization s > serialization_auto.h
+	cat request_results.h | code_generation/struct_filter | code_generation/serialization d >> serialization_auto.h
+
+slave_thread_auto.h : mysql_plugin.h pgsql_plugin.h file_logger_plugin.h code_generation/plugin_creator.py
+	cat *.h | code_generation/plugin_creator.py > slave_thread_auto.h
+
+#--- DO NOT EDIT BELOW THIS LINE
+#--- These lines were automatically generated by `mkdep'
+
+access.o: access.c
+access.o: access.h
+access.o: cpp_to_c_helpers.h
+access.o: filesize.h
+access.o: ls.h
+access.o: str.h
+access.o: tunables.h
+
+ascii.o: ascii.c
+ascii.o: ascii.h
+
+banner.o: banner.c
+banner.o: banner.h
+banner.o: cpp_to_c_helpers.h
+banner.o: filesize.h
+banner.o: filestr.h
+banner.o: ftpcmdio.h
+banner.o: session.h
+banner.o: str.h
+banner.o: strlist.h
+banner.o: sysstr.h
+banner.o: sysutil.h
+banner.o: tunables.h
+
+features.o: features.c
+features.o: features.h
+features.o: ftpcmdio.h
+features.o: ftpcodes.h
+features.o: tunables.h
+
+filestr.o: cpp_to_c_helpers.h
+filestr.o: filesize.h
+filestr.o: filestr.c
+filestr.o: filestr.h
+filestr.o: secbuf.h
+filestr.o: str.h
+filestr.o: sysutil.h
+
+ftpcmdio.o: cpp_to_c_helpers.h
+ftpcmdio.o: defs.h
+ftpcmdio.o: filesize.h
+ftpcmdio.o: ftpcmdio.c
+ftpcmdio.o: ftpcmdio.h
+ftpcmdio.o: ftpcodes.h
+ftpcmdio.o: logging.h
+ftpcmdio.o: netstr.h
+ftpcmdio.o: readwrite.h
+ftpcmdio.o: secbuf.h
+ftpcmdio.o: session.h
+ftpcmdio.o: str.h
+ftpcmdio.o: sysutil.h
+ftpcmdio.o: tunables.h
+ftpcmdio.o: utility.h
+
+ftpdataio.o: ascii.h
+ftpdataio.o: cpp_to_c_helpers.h
+ftpdataio.o: defs.h
+ftpdataio.o: filesize.h
+ftpdataio.o: ftpcmdio.h
+ftpdataio.o: ftpcodes.h
+ftpdataio.o: ftpdataio.c
+ftpdataio.o: ftpdataio.h
+ftpdataio.o: logging.h
+ftpdataio.o: ls.h
+ftpdataio.o: oneprocess.h
+ftpdataio.o: readwrite.h
+ftpdataio.o: secbuf.h
+ftpdataio.o: session.h
+ftpdataio.o: ssl.h
+ftpdataio.o: str.h
+ftpdataio.o: strlist.h
+ftpdataio.o: sysdeputil.h
+ftpdataio.o: sysstr.h
+ftpdataio.o: sysutil.h
+ftpdataio.o: tunables.h
+ftpdataio.o: twoprocess.h
+ftpdataio.o: utility.h
+
+hash.o: filesize.h
+hash.o: hash.c
+hash.o: hash.h
+hash.o: sysutil.h
+hash.o: utility.h
+
+ipaddrparse.o: cpp_to_c_helpers.h
+ipaddrparse.o: filesize.h
+ipaddrparse.o: ipaddrparse.c
+ipaddrparse.o: ipaddrparse.h
+ipaddrparse.o: str.h
+ipaddrparse.o: sysutil.h
+
+logging.o: cpp_to_c_helpers.h
+logging.o: filesize.h
+logging.o: logging.c
+logging.o: logging.h
+logging.o: session.h
+logging.o: str.h
+logging.o: sysstr.h
+logging.o: sysutil.h
+logging.o: tunables.h
+logging.o: utility.h
+
+ls.o: access.h
+ls.o: cpp_to_c_helpers.h
+ls.o: filesize.h
+ls.o: ls.c
+ls.o: ls.h
+ls.o: str.h
+ls.o: strlist.h
+ls.o: sysstr.h
+ls.o: sysutil.h
+ls.o: tunables.h
+
+main.o: cpp_to_c_helpers.h
+main.o: defs.h
+main.o: filesize.h
+main.o: filestr.h
+main.o: ftpcmdio.h
+main.o: logging.h
+main.o: main.c
+main.o: oneprocess.h
+main.o: parseconf.h
+main.o: plugin_architecture_interface.h
+main.o: session.h
+main.o: ssl.h
+main.o: standalone.h
+main.o: str.h
+main.o: sysdeputil.h
+main.o: sysutil.h
+main.o: tcpwrap.h
+main.o: tunables.h
+main.o: twoprocess.h
+main.o: utility.h
+main.o: vsftpver.h
+
+netstr.o: cpp_to_c_helpers.h
+netstr.o: filesize.h
+netstr.o: netstr.c
+netstr.o: netstr.h
+netstr.o: str.h
+netstr.o: sysstr.h
+netstr.o: sysutil.h
+netstr.o: utility.h
+
+oneprocess.o: cpp_to_c_helpers.h
+oneprocess.o: filesize.h
+oneprocess.o: oneprocess.c
+oneprocess.o: postlogin.h
+oneprocess.o: prelogin.h
+oneprocess.o: privops.h
+oneprocess.o: secutil.h
+oneprocess.o: session.h
+oneprocess.o: str.h
+oneprocess.o: sysdeputil.h
+oneprocess.o: sysstr.h
+oneprocess.o: tunables.h
+oneprocess.o: utility.h
+
+parseconf.o: cpp_to_c_helpers.h
+parseconf.o: defs.h
+parseconf.o: filesize.h
+parseconf.o: filestr.h
+parseconf.o: parseconf.c
+parseconf.o: parseconf.h
+parseconf.o: str.h
+parseconf.o: sysutil.h
+parseconf.o: tunables.h
+parseconf.o: utility.h
+
+postlogin.o: access.h
+postlogin.o: banner.h
+postlogin.o: cpp_to_c_helpers.h
+postlogin.o: defs.h
+postlogin.o: event_c_api.h
+postlogin.o: features.h
+postlogin.o: filesize.h
+postlogin.o: ftpcmdio.h
+postlogin.o: ftpcodes.h
+postlogin.o: ftpdataio.h
+postlogin.o: ipaddrparse.h
+postlogin.o: logging.h
+postlogin.o: oneprocess.h
+postlogin.o: postlogin.c
+postlogin.o: postlogin.h
+postlogin.o: postlogin_events.h
+postlogin.o: postlogin_requests.h
+postlogin.o: request_c_api.h
+postlogin.o: request_results.h
+postlogin.o: session.h
+postlogin.o: ssl.h
+postlogin.o: str.h
+postlogin.o: sysdeputil.h
+postlogin.o: sysstr.h
+postlogin.o: sysutil.h
+postlogin.o: tunables.h
+postlogin.o: twoprocess.h
+postlogin.o: utility.h
+postlogin.o: vsftpver.h
+postlogin.o: vsfutils_c.h
+
+postlogin_events.o: cpp_to_c_helpers.h
+postlogin_events.o: event_c_api.h
+postlogin_events.o: filesize.h
+postlogin_events.o: ftpdataio.h
+postlogin_events.o: postlogin_events.c
+postlogin_events.o: postlogin_events.h
+postlogin_events.o: session.h
+postlogin_events.o: str.h
+postlogin_events.o: sysstr.h
+postlogin_events.o: sysutil.h
+postlogin_events.o: vsfutils_c.h
+
+postlogin_requests.o: cpp_to_c_helpers.h
+postlogin_requests.o: filesize.h
+postlogin_requests.o: ftpdataio.h
+postlogin_requests.o: postlogin_requests.c
+postlogin_requests.o: postlogin_requests.h
+postlogin_requests.o: request_c_api.h
+postlogin_requests.o: request_results.h
+postlogin_requests.o: session.h
+postlogin_requests.o: str.h
+postlogin_requests.o: sysstr.h
+postlogin_requests.o: sysutil.h
+postlogin_requests.o: vsfutils_c.h
+
+postprivparent.o: cpp_to_c_helpers.h
+postprivparent.o: defs.h
+postprivparent.o: filesize.h
+postprivparent.o: postprivparent.c
+postprivparent.o: postprivparent.h
+postprivparent.o: privops.h
+postprivparent.o: privsock.h
+postprivparent.o: secutil.h
+postprivparent.o: session.h
+postprivparent.o: str.h
+postprivparent.o: sysdeputil.h
+postprivparent.o: sysstr.h
+postprivparent.o: sysutil.h
+postprivparent.o: tunables.h
+postprivparent.o: utility.h
+
+prelogin.o: banner.h
+prelogin.o: cpp_to_c_helpers.h
+prelogin.o: defs.h
+prelogin.o: event_c_api.h
+prelogin.o: features.h
+prelogin.o: filesize.h
+prelogin.o: ftpcmdio.h
+prelogin.o: ftpcodes.h
+prelogin.o: logging.h
+prelogin.o: oneprocess.h
+prelogin.o: prelogin.c
+prelogin.o: prelogin.h
+prelogin.o: session.h
+prelogin.o: ssl.h
+prelogin.o: str.h
+prelogin.o: sysdeputil.h
+prelogin.o: sysutil.h
+prelogin.o: tunables.h
+prelogin.o: twoprocess.h
+prelogin.o: vsftpver.h
+
+privops.o: cpp_to_c_helpers.h
+privops.o: defs.h
+privops.o: event_c_api.h
+privops.o: filesize.h
+privops.o: ftpcmdio.h
+privops.o: ftpcodes.h
+privops.o: logging.h
+privops.o: privops.c
+privops.o: privops.h
+privops.o: request_c_api.h
+privops.o: request_results.h
+privops.o: session.h
+privops.o: str.h
+privops.o: sysdeputil.h
+privops.o: sysutil.h
+privops.o: tunables.h
+privops.o: utility.h
+
+privsock.o: cpp_to_c_helpers.h
+privsock.o: defs.h
+privsock.o: filesize.h
+privsock.o: netstr.h
+privsock.o: privsock.c
+privsock.o: privsock.h
+privsock.o: session.h
+privsock.o: str.h
+privsock.o: sysdeputil.h
+privsock.o: sysutil.h
+privsock.o: utility.h
+
+readwrite.o: cpp_to_c_helpers.h
+readwrite.o: defs.h
+readwrite.o: filesize.h
+readwrite.o: netstr.h
+readwrite.o: privsock.h
+readwrite.o: readwrite.c
+readwrite.o: readwrite.h
+readwrite.o: session.h
+readwrite.o: ssl.h
+readwrite.o: str.h
+readwrite.o: sysutil.h
+
+secbuf.o: filesize.h
+secbuf.o: secbuf.c
+secbuf.o: secbuf.h
+secbuf.o: sysdeputil.h
+secbuf.o: sysutil.h
+secbuf.o: utility.h
+
+secutil.o: cpp_to_c_helpers.h
+secutil.o: filesize.h
+secutil.o: secutil.c
+secutil.o: secutil.h
+secutil.o: str.h
+secutil.o: sysdeputil.h
+secutil.o: sysstr.h
+secutil.o: sysutil.h
+secutil.o: utility.h
+
+ssl.o: builddefs.h
+ssl.o: cpp_to_c_helpers.h
+ssl.o: defs.h
+ssl.o: filesize.h
+ssl.o: ftpcmdio.h
+ssl.o: ftpcodes.h
+ssl.o: session.h
+ssl.o: ssl.c
+ssl.o: ssl.h
+ssl.o: str.h
+ssl.o: sysutil.h
+ssl.o: tunables.h
+ssl.o: utility.h
+
+standalone.o: cpp_to_c_helpers.h
+standalone.o: defs.h
+standalone.o: filesize.h
+standalone.o: hash.h
+standalone.o: ipaddrparse.h
+standalone.o: parseconf.h
+standalone.o: plugin_architecture_interface.h
+standalone.o: session.h
+standalone.o: standalone.c
+standalone.o: standalone.h
+standalone.o: str.h
+standalone.o: sysdeputil.h
+standalone.o: sysutil.h
+standalone.o: tunables.h
+standalone.o: utility.h
+
+str.o: cpp_to_c_helpers.h
+str.o: filesize.h
+str.o: str.c
+str.o: str.h
+str.o: sysutil.h
+str.o: utility.h
+
+strlist.o: cpp_to_c_helpers.h
+strlist.o: filesize.h
+strlist.o: str.h
+strlist.o: strlist.c
+strlist.o: strlist.h
+strlist.o: sysutil.h
+strlist.o: utility.h
+
+sysdeputil.o: builddefs.h
+sysdeputil.o: cpp_to_c_helpers.h
+sysdeputil.o: defs.h
+sysdeputil.o: filesize.h
+sysdeputil.o: port/cmsg_extras.h
+sysdeputil.o: port/porting_junk.h
+sysdeputil.o: secbuf.h
+sysdeputil.o: str.h
+sysdeputil.o: sysdeputil.c
+sysdeputil.o: sysdeputil.h
+sysdeputil.o: sysutil.h
+sysdeputil.o: tunables.h
+sysdeputil.o: utility.h
+
+sysstr.o: cpp_to_c_helpers.h
+sysstr.o: defs.h
+sysstr.o: filesize.h
+sysstr.o: secbuf.h
+sysstr.o: str.h
+sysstr.o: sysstr.c
+sysstr.o: sysstr.h
+sysstr.o: sysutil.h
+sysstr.o: tunables.h
+sysstr.o: utility.h
+
+sysutil.o: cpp_to_c_helpers.h
+sysutil.o: event_c_api.h
+sysutil.o: filesize.h
+sysutil.o: port/cmsg_extras.h
+sysutil.o: port/porting_junk.h
+sysutil.o: request_c_api.h
+sysutil.o: request_results.h
+sysutil.o: sysutil.c
+sysutil.o: sysutil.h
+sysutil.o: tunables.h
+sysutil.o: utility.h
+
+tcpwrap.o: builddefs.h
+tcpwrap.o: tcpwrap.c
+tcpwrap.o: tcpwrap.h
+tcpwrap.o: utility.h
+
+tunables.o: tunables.c
+tunables.o: tunables.h
+
+twoprocess.o: cpp_to_c_helpers.h
+twoprocess.o: defs.h
+twoprocess.o: filesize.h
+twoprocess.o: filestr.h
+twoprocess.o: parseconf.h
+twoprocess.o: postlogin.h
+twoprocess.o: postprivparent.h
+twoprocess.o: prelogin.h
+twoprocess.o: privops.h
+twoprocess.o: privsock.h
+twoprocess.o: readwrite.h
+twoprocess.o: secutil.h
+twoprocess.o: session.h
+twoprocess.o: ssl.h
+twoprocess.o: str.h
+twoprocess.o: sysdeputil.h
+twoprocess.o: sysstr.h
+twoprocess.o: sysutil.h
+twoprocess.o: tunables.h
+twoprocess.o: twoprocess.c
+twoprocess.o: twoprocess.h
+twoprocess.o: utility.h
+
+utility.o: cpp_to_c_helpers.h
+utility.o: defs.h
+utility.o: filesize.h
+utility.o: str.h
+utility.o: sysutil.h
+utility.o: utility.c
+utility.o: utility.h
+
+event.o: countedPtr.h
+event.o: cpp_to_c_helpers.h
+event.o: event.cpp
+event.o: event.h
+event.o: event_auto.h
+event.o: event_c_api.h
+event.o: exceptions.h
+event.o: filesize.h
+event.o: plugin_architecture_api.h
+event.o: plugin_architecture_interface.h
+event.o: request.h
+event.o: request_c_api.h
+event.o: request_results.h
+event.o: serialization_auto.h
+event.o: session.h
+event.o: str.h
+event.o: typeid_hash.h
+event.o: udsrf.h
+event.o: udsrf_auto.h
+event.o: unknown_object.h
+
+file_logger_plugin.o: countedPtr.h
+file_logger_plugin.o: cpp_to_c_helpers.h
+file_logger_plugin.o: event.h
+file_logger_plugin.o: event_c_api.h
+file_logger_plugin.o: exceptions.h
+file_logger_plugin.o: file_logger_plugin.cpp
+file_logger_plugin.o: file_logger_plugin.h
+file_logger_plugin.o: plugin_architecture_api.h
+file_logger_plugin.o: request.h
+file_logger_plugin.o: request_c_api.h
+file_logger_plugin.o: request_results.h
+file_logger_plugin.o: serialization_auto.h
+file_logger_plugin.o: typeid_hash.h
+file_logger_plugin.o: unknown_object.h
+
+mysql_plugin.o: countedPtr.h
+mysql_plugin.o: cpp_to_c_helpers.h
+mysql_plugin.o: event.h
+mysql_plugin.o: event_c_api.h
+mysql_plugin.o: exceptions.h
+mysql_plugin.o: mysql_plugin.cpp
+mysql_plugin.o: mysql_plugin.h
+mysql_plugin.o: plugin_architecture_api.h
+mysql_plugin.o: request.h
+mysql_plugin.o: request_c_api.h
+mysql_plugin.o: request_results.h
+mysql_plugin.o: serialization_auto.h
+mysql_plugin.o: tunables.h
+mysql_plugin.o: typeid_hash.h
+mysql_plugin.o: unknown_object.h
+mysql_plugin.o: vsfutils.h
+mysql_plugin.o: vsfutils_c.h
+
+pgsql_plugin.o: countedPtr.h
+pgsql_plugin.o: cpp_to_c_helpers.h
+pgsql_plugin.o: event.h
+pgsql_plugin.o: event_c_api.h
+pgsql_plugin.o: exceptions.h
+pgsql_plugin.o: pgsql_plugin.cpp
+pgsql_plugin.o: pgsql_plugin.h
+pgsql_plugin.o: plugin_architecture_api.h
+pgsql_plugin.o: request.h
+pgsql_plugin.o: request_c_api.h
+pgsql_plugin.o: request_results.h
+pgsql_plugin.o: serialization_auto.h
+pgsql_plugin.o: tunables.h
+pgsql_plugin.o: typeid_hash.h
+pgsql_plugin.o: unknown_object.h
+pgsql_plugin.o: vsfutils.h
+pgsql_plugin.o: vsfutils_c.h
+
+plugin_architecture_api.o: countedPtr.h
+plugin_architecture_api.o: cpp_to_c_helpers.h
+plugin_architecture_api.o: event.h
+plugin_architecture_api.o: event_c_api.h
+plugin_architecture_api.o: exceptions.h
+plugin_architecture_api.o: plugin_architecture_api.cpp
+plugin_architecture_api.o: plugin_architecture_api.h
+plugin_architecture_api.o: request.h
+plugin_architecture_api.o: request_c_api.h
+plugin_architecture_api.o: request_results.h
+plugin_architecture_api.o: serialization_auto.h
+plugin_architecture_api.o: typeid_hash.h
+plugin_architecture_api.o: unknown_object.h
+
+plugin_architecture_interface.o: countedPtr.h
+plugin_architecture_interface.o: cpp_to_c_helpers.h
+plugin_architecture_interface.o: event_c_api.h
+plugin_architecture_interface.o: exceptions.h
+plugin_architecture_interface.o: filesize.h
+plugin_architecture_interface.o: plugin_architecture_interface.cpp
+plugin_architecture_interface.o: plugin_architecture_interface.h
+plugin_architecture_interface.o: request.h
+plugin_architecture_interface.o: request_c_api.h
+plugin_architecture_interface.o: request_results.h
+plugin_architecture_interface.o: serialization_auto.h
+plugin_architecture_interface.o: session.h
+plugin_architecture_interface.o: slave_thread.h
+plugin_architecture_interface.o: str.h
+plugin_architecture_interface.o: typeid_hash.h
+plugin_architecture_interface.o: udsrf.h
+plugin_architecture_interface.o: udsrf_auto.h
+plugin_architecture_interface.o: unknown_object.h
+
+request.o: countedPtr.h
+request.o: cpp_to_c_helpers.h
+request.o: event.h
+request.o: event_c_api.h
+request.o: exceptions.h
+request.o: filesize.h
+request.o: plugin_architecture_api.h
+request.o: plugin_architecture_interface.h
+request.o: request.cpp
+request.o: request.h
+request.o: request_auto.h
+request.o: request_c_api.h
+request.o: request_results.h
+request.o: serialization_auto.h
+request.o: session.h
+request.o: str.h
+request.o: typeid_hash.h
+request.o: udsrf.h
+request.o: udsrf_auto.h
+request.o: unknown_object.h
+
+request_results.o: cpp_to_c_helpers.h
+request_results.o: request_results.cpp
+request_results.o: request_results.h
+
+slave_thread.o: countedPtr.h
+slave_thread.o: cpp_to_c_helpers.h
+slave_thread.o: event.h
+slave_thread.o: event_c_api.h
+slave_thread.o: exceptions.h
+slave_thread.o: file_logger_plugin.h
+slave_thread.o: filesize.h
+slave_thread.o: mysql_plugin.h
+slave_thread.o: pgsql_plugin.h
+slave_thread.o: plugin_architecture_api.h
+slave_thread.o: plugin_architecture_interface.h
+slave_thread.o: request.h
+slave_thread.o: request_c_api.h
+slave_thread.o: request_results.h
+slave_thread.o: serialization_auto.h
+slave_thread.o: session.h
+slave_thread.o: slave_thread.cpp
+slave_thread.o: slave_thread.h
+slave_thread.o: slave_thread_auto.h
+slave_thread.o: str.h
+slave_thread.o: tunables.h
+slave_thread.o: typeid_hash.h
+slave_thread.o: udsrf.h
+slave_thread.o: udsrf_auto.h
+slave_thread.o: unknown_object.h
+slave_thread.o: vsfutils.h
+slave_thread.o: vsfutils_c.h
+
+typeid_hash.o: typeid_hash.cpp
+typeid_hash.o: typeid_hash.h
+
+vsfutils.o: cpp_to_c_helpers.h
+vsfutils.o: vsfutils.cpp
+vsfutils.o: vsfutils.h
+vsfutils.o: vsfutils_c.h
+
+udsrf.o: exceptions.h
+udsrf.o: udsrf.cpp
+udsrf.o: udsrf.h
+
+hi_prio_thread.o: exceptions.h
+hi_prio_thread.o: hi_prio_thread.cpp
+hi_prio_thread.o: hi_prio_thread.h
+hi_prio_thread.o: udsrf.h
+
+lo_prio_thread.o: hi_prio_thread.h
+lo_prio_thread.o: lo_prio_thread.cpp
+lo_prio_thread.o: lo_prio_thread.h
+
